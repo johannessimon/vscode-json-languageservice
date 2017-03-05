@@ -417,8 +417,41 @@ export class JSONCompletion {
 		}
 	}
 
+	private getInsertTextForSchema(schema: JSONSchema, placeholderAccumulator: PlaceholderAccumulator = new PlaceholderAccumulator) {
+		if (Array.isArray(schema.required)) {
+			let type = schema.type;
+			let propertyTexts: string[] = [];
+			for (let requiredProp of schema.required) {
+				if (schema.properties && schema.properties[requiredProp]) {
+					let requiredPropSchema = schema.properties[requiredProp];
+					let propertyText = '\n' + this.getInsertTextForProperty(requiredProp, requiredPropSchema, true, '', placeholderAccumulator);
+					propertyTexts.push(propertyText.replace(/\n/g, '\n\t'));
+				}
+			}
+			return '{' +  propertyTexts.join(',') + '\n}';
+		} else if (Array.isArray(schema.oneOf)) {
+			return this.getInsertTextForSchema(schema.oneOf[0], placeholderAccumulator);
+		} else if (Array.isArray(schema.anyOf)) {
+			return this.getInsertTextForSchema(schema.anyOf[0], placeholderAccumulator);
+		} else if (Array.isArray(schema.allOf)) {
+			return this.getInsertTextForSchema(schema.allOf[0], placeholderAccumulator);
+		}
+	}
+
 	private addDefaultValueCompletions(schema: JSONSchema, separatorAfter: string, collector: CompletionsCollector, arrayDepth = 0): void {
 		let hasProposals = false;
+		if (Array.isArray(schema.required)) {
+			let type = schema.type;
+			let insertText = this.getInsertTextForSchema(schema);
+			collector.add({
+				kind: this.getSuggestionKind(type),
+				label: schema.description || schema.title,
+				insertText,
+				insertTextFormat: InsertTextFormat.Snippet,
+				detail: localize('json.suggest.default', 'Required value'),
+			});
+			hasProposals = true;
+		}
 		if (schema.default) {
 			let type = schema.type;
 			let value = schema.default;
@@ -608,21 +641,21 @@ export class JSONCompletion {
 
 	private templateVarIdCounter = 0;
 
-	private getInsertTextForGuessedValue(value: any, separatorAfter: string): string {
+	private getInsertTextForGuessedValue(value: any, separatorAfter: string, placeholderAccumulator: PlaceholderAccumulator): string {
 		switch (typeof value) {
 			case 'object':
 				if (value === null) {
-					return '${1:null}' + separatorAfter;
+					return '${' + placeholderAccumulator.getNewPlaceholder() + ':null}' + separatorAfter;
 				}
 				return this.getInsertTextForValue(value, separatorAfter);
 			case 'string':
 				let snippetValue = JSON.stringify(value);
 				snippetValue = snippetValue.substr(1, snippetValue.length - 2); // remove quotes
 				snippetValue = this.getInsertTextForPlainText(snippetValue); // escape \ and }
-				return '"${1:' + snippetValue + '}"' + separatorAfter;
+				return '"${' + placeholderAccumulator.getNewPlaceholder() + ':' + snippetValue + '}"' + separatorAfter;
 			case 'number':
 			case 'boolean':
-				return '${1:' + JSON.stringify(value) + '}' + separatorAfter;
+				return '${' + placeholderAccumulator.getNewPlaceholder() + ':' + JSON.stringify(value) + '}' + separatorAfter;
 		}
 		return this.getInsertTextForValue(value, separatorAfter);
 	}
@@ -667,8 +700,8 @@ export class JSONCompletion {
 		}
 	}
 
-	private getInsertTextForProperty(key: string, propertySchema: JSONSchema, addValue: boolean, separatorAfter: string): string {
-		
+	private getInsertTextForProperty(key: string, propertySchema: JSONSchema, addValue: boolean, separatorAfter: string, placeholderAccumulator: PlaceholderAccumulator = new PlaceholderAccumulator): string {
+
 		let propertyText = this.getInsertTextForValue(key, '');
 		if (!addValue) {
 			return propertyText;
@@ -678,37 +711,38 @@ export class JSONCompletion {
 		if (propertySchema) {
 			let defaultVal = propertySchema.default;
 			if (typeof defaultVal !== 'undefined') {
-				resultText += this.getInsertTextForGuessedValue(defaultVal, '');
+				resultText += this.getInsertTextForGuessedValue(defaultVal, '', placeholderAccumulator);
 			} else if (propertySchema.enum && propertySchema.enum.length > 0) {
-				resultText += this.getInsertTextForGuessedValue(propertySchema.enum[0], '');
+				resultText += this.getInsertTextForGuessedValue(propertySchema.enum[0], '', placeholderAccumulator);
 			} else {
 				let type = this.getSchemaType(propertySchema);
 				switch (type) {
 					case 'boolean':
-						resultText += '${1:false}';
+						resultText += '${' + placeholderAccumulator.getNewPlaceholder() + ':false}';
 						break;
 					case 'string':
-						resultText += '"$1"';
+						resultText += '"$' + placeholderAccumulator.getNewPlaceholder() + '"';
 						break;
 					case 'object':
-						resultText += '{\n\t$1\n}';
+						resultText += this.getInsertTextForSchema(propertySchema, placeholderAccumulator);
 						break;
 					case 'array':
-						resultText += '[\n\t$1\n]';
+						resultText += '[\n\t$' + placeholderAccumulator.getNewPlaceholder() + '\n]';
 						break;
 					case 'number':
 					case 'integer':
-						resultText += '${1:0}';
+						resultText += '${' + placeholderAccumulator.getNewPlaceholder() + ':0}';
 						break;
 					case 'null':
-						resultText += '${1:null}';
+						resultText += '${' + placeholderAccumulator.getNewPlaceholder() + ':null}';
 						break;
 					default:
 						return propertyText;
 				}
 			}
-		} else {
-			resultText += '$1';
+		}
+		else {
+			resultText += '$' + placeholderAccumulator.getNewPlaceholder();
 		}
 		resultText += separatorAfter;
 		return resultText;
@@ -765,5 +799,15 @@ export class JSONCompletion {
 			token = scanner.scan();
 		}
 		return (token === Json.SyntaxKind.LineCommentTrivia || token === Json.SyntaxKind.BlockCommentTrivia) && scanner.getTokenOffset() <= offset;
+	}
+}
+
+class PlaceholderAccumulator {
+	numPlaceholders: number = 0;
+	/**
+	 * Returns a unique index that can be used for a new placeholder
+	 */
+	getNewPlaceholder(): number {
+		return ++this.numPlaceholders;
 	}
 }
