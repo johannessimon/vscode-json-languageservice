@@ -682,15 +682,7 @@ export class JSONCompletion {
 			} else if (propertySchema.enum && propertySchema.enum.length > 0) {
 				resultText += this.getInsertTextForGuessedValue(propertySchema.enum[0], '');
 			} else {
-				var type = Array.isArray(propertySchema.type) ? propertySchema.type[0] : propertySchema.type;
-				if (!type) {
-					if (propertySchema.properties) {
-						type = 'object';
-					} else if (propertySchema.items) {
-						type = 'array';
-					}
-
-				}
+				let type = this.getSchemaType(propertySchema);
 				switch (type) {
 					case 'boolean':
 						resultText += '${1:false}';
@@ -720,6 +712,25 @@ export class JSONCompletion {
 		}
 		resultText += separatorAfter;
 		return resultText;
+	}
+
+	private getSchemaType(schema: JSONSchema): string {
+		let type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+		if (!type) {
+			if (schema.properties) {
+				type = 'object';
+			}
+			else if (schema.items) {
+				type = 'array';
+			} else if (Array.isArray(schema.anyOf)) {
+				type = this.getSchemaType(schema.anyOf[0]);
+			} else if (Array.isArray(schema.allOf)) {
+				type = this.getSchemaType(schema.allOf[0]);
+			} else if (Array.isArray(schema.oneOf)) {
+				type = this.getSchemaType(schema.oneOf[0]);
+			}
+		}
+		return type;
 	}
 
 	private getCurrentWord(document: TextDocument, offset: number) {
